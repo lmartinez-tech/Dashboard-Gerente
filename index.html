@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Dashboard Gerente Contador</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Navegación principal">
+      <div class="brand">
+        <div class="brand-mark">GC</div>
+        <div>
+          <h1>GC Control</h1>
+          <p>Dashboard gerente contador</p>
+        </div>
+      </div>
+
+      <nav class="nav" id="mainNav">
+        <button class="nav-item active" data-module="dashboard" type="button">
+          <span class="nav-icon" data-icon="layout"></span>
+          Inicio
+        </button>
+        <button class="nav-item" data-module="clientes" type="button">
+          <span class="nav-icon" data-icon="building"></span>
+          Clientes
+        </button>
+        <button class="nav-item" data-module="actividades" type="button">
+          <span class="nav-icon" data-icon="checklist"></span>
+          Actividades
+        </button>
+        <button class="nav-item" data-module="reuniones" type="button">
+          <span class="nav-icon" data-icon="calendar"></span>
+          Reuniones
+        </button>
+        <button class="nav-item" data-module="equipo" type="button">
+          <span class="nav-icon" data-icon="users"></span>
+          Equipo
+        </button>
+        <button class="nav-item" data-module="datos" type="button">
+          <span class="nav-icon" data-icon="database"></span>
+          Datos
+        </button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="small-label">Ritual sugerido</div>
+        <div class="ritual-box">
+          <strong>15 minutos</strong>
+          <span>Riesgos, pendientes críticos, decisiones y compromisos.</span>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-title">
+          <span class="eyebrow">Seguimiento operativo</span>
+          <h2 id="pageTitle">Inicio</h2>
+        </div>
+
+        <div class="topbar-controls" aria-label="Filtros globales">
+          <label class="field search-field">
+            <span>Buscar</span>
+            <input id="globalSearch" type="search" placeholder="Cliente, actividad o responsable">
+          </label>
+          <label class="field compact-field">
+            <span>Vista</span>
+            <select id="currentPerson"></select>
+          </label>
+          <label class="field compact-field">
+            <span>Gerente</span>
+            <select id="managerFilter"></select>
+          </label>
+          <label class="field compact-field">
+            <span>Responsable</span>
+            <select id="personFilter"></select>
+          </label>
+          <label class="field compact-field">
+            <span>Estado</span>
+            <select id="statusFilter"></select>
+          </label>
+        </div>
+
+        <div class="topbar-actions">
+          <button class="icon-button" id="newClientBtn" type="button" title="Crear cliente" aria-label="Crear cliente">
+            <span data-icon="building-plus"></span>
+          </button>
+          <button class="primary-button" id="newActivityBtn" type="button">
+            <span data-icon="plus"></span>
+            Actividad
+          </button>
+        </div>
+      </header>
+
+      <section class="view" id="appView" aria-live="polite"></section>
+    </main>
+  </div>
+
+  <div id="modalRoot"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js" defer></script>
+</body>
+</html>
