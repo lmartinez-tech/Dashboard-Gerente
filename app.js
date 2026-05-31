@@ -1226,9 +1226,14 @@ function openClientForm(clientId) {
             <input name="sector" type="text" value="${escapeAttribute(model.sector)}">
           </label>
           <label class="field">
-            <span>Plan</span>
-            <input name="plan" type="text" value="${escapeAttribute(model.plan)}">
-          </label>
+  <span>Régimen</span>
+  <select name="plan">
+    <option value="Régimen ordinario" ${model.plan === "Régimen ordinario" ? "selected" : ""}>Régimen ordinario</option>
+    <option value="Régimen simple" ${model.plan === "Régimen simple" ? "selected" : ""}>Régimen simple</option>
+    <option value="Gran contribuyente" ${model.plan === "Gran contribuyente" ? "selected" : ""}>Gran contribuyente</option>
+    <option value="Otro" ${model.plan === "Otro" ? "selected" : ""}>Otro</option>
+  </select>
+</label>
           <label class="field">
             <span>Gerente</span>
             <select name="managerId">
