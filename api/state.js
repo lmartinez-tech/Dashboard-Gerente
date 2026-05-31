@@ -4,9 +4,17 @@ const TABLE_NAME = process.env.SUPABASE_STATE_TABLE || 'dashboard_app_state';
 const ROW_ID = process.env.SUPABASE_STATE_ROW_ID || 'main';
 
 function supabaseConfig() {
-  const url = requiredEnv('SUPABASE_URL').replace(/\/$/, '');
-  const key = requiredEnv('SUPABASE_SERVICE_ROLE_KEY');
+  const url = requiredEnv('SUPABASE_URL').trim().replace(/\/$/, '');
+  const key = requiredEnv('SUPABASE_SERVICE_ROLE_KEY').trim();
   return { url, key };
+}
+
+function supabaseHostForLog() {
+  try {
+    return new URL(requiredEnv('SUPABASE_URL').trim()).host;
+  } catch (error) {
+    return `URL invalida: ${String(process.env.SUPABASE_URL || '').slice(0, 40)}`;
+  }
 }
 
 function supabaseHeaders(extra = {}) {
@@ -32,13 +40,35 @@ function supabaseErrorMessage(payload, fallback) {
   return payload.message || payload.error || payload.details || payload.hint || payload.raw || fallback;
 }
 
+function enrichFetchError(error, action) {
+  const cause = error && error.cause ? error.cause : null;
+  const parts = [
+    `Supabase ${action} fetch failed`,
+    `host=${supabaseHostForLog()}`,
+    cause?.code ? `code=${cause.code}` : '',
+    cause?.errno ? `errno=${cause.errno}` : '',
+    cause?.syscall ? `syscall=${cause.syscall}` : '',
+    cause?.hostname ? `hostname=${cause.hostname}` : '',
+    cause?.message ? `cause=${cause.message}` : ''
+  ].filter(Boolean);
+  const enriched = new Error(parts.join(' | '));
+  enriched.statusCode = 500;
+  return enriched;
+}
+
 async function getState() {
   const { url } = supabaseConfig();
   const endpoint = `${url}/rest/v1/${TABLE_NAME}?id=eq.${encodeURIComponent(ROW_ID)}&select=data,updated_at`;
-  const response = await fetch(endpoint, {
-    method: 'GET',
-    headers: supabaseHeaders({ Accept: 'application/json' })
-  });
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: 'GET',
+      headers: supabaseHeaders({ Accept: 'application/json' })
+    });
+  } catch (error) {
+    throw enrichFetchError(error, 'GET');
+  }
+
   const text = await response.text();
   const payload = parseMaybeJson(text) || [];
 
@@ -56,14 +86,20 @@ async function getState() {
 async function saveState(state) {
   const { url } = supabaseConfig();
   const endpoint = `${url}/rest/v1/${TABLE_NAME}?on_conflict=id`;
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: supabaseHeaders({
-      'Content-Type': 'application/json',
-      Prefer: 'resolution=merge-duplicates,return=representation'
-    }),
-    body: JSON.stringify([{ id: ROW_ID, data: state }])
-  });
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: supabaseHeaders({
+        'Content-Type': 'application/json',
+        Prefer: 'resolution=merge-duplicates,return=representation'
+      }),
+      body: JSON.stringify([{ id: ROW_ID, data: state }])
+    });
+  } catch (error) {
+    throw enrichFetchError(error, 'POST');
+  }
+
   const text = await response.text();
   const payload = parseMaybeJson(text) || [];
 
