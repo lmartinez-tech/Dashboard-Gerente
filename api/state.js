@@ -18,6 +18,20 @@ function supabaseHeaders(extra = {}) {
   };
 }
 
+function parseMaybeJson(text) {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    return { raw: text };
+  }
+}
+
+function supabaseErrorMessage(payload, fallback) {
+  if (!payload) return fallback;
+  return payload.message || payload.error || payload.details || payload.hint || payload.raw || fallback;
+}
+
 async function getState() {
   const { url } = supabaseConfig();
   const endpoint = `${url}/rest/v1/${TABLE_NAME}?id=eq.${encodeURIComponent(ROW_ID)}&select=data,updated_at`;
@@ -26,10 +40,10 @@ async function getState() {
     headers: supabaseHeaders({ Accept: 'application/json' })
   });
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : [];
+  const payload = parseMaybeJson(text) || [];
 
   if (!response.ok) {
-    throw new Error(payload.message || payload.error || 'No se pudo leer Supabase');
+    throw new Error(`Supabase GET ${response.status}: ${supabaseErrorMessage(payload, 'No se pudo leer Supabase')}`);
   }
 
   const row = Array.isArray(payload) ? payload[0] : null;
@@ -51,10 +65,10 @@ async function saveState(state) {
     body: JSON.stringify([{ id: ROW_ID, data: state }])
   });
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : [];
+  const payload = parseMaybeJson(text) || [];
 
   if (!response.ok) {
-    throw new Error(payload.message || payload.error || 'No se pudo guardar Supabase');
+    throw new Error(`Supabase POST ${response.status}: ${supabaseErrorMessage(payload, 'No se pudo guardar Supabase')}`);
   }
 
   const row = Array.isArray(payload) ? payload[0] : null;
@@ -82,6 +96,7 @@ module.exports = async function handler(req, res) {
 
     return sendJson(res, 405, { error: 'Metodo no permitido' });
   } catch (error) {
+    console.error('dashboard-gerente api/state error:', error.message);
     return sendJson(res, error.statusCode || 500, {
       error: error.message || 'Error interno'
     });
