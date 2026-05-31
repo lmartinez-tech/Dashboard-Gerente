@@ -1,4 +1,12 @@
 const STORAGE_KEY = "gc-control-dashboard-v1";
+const AUTH_STORAGE_KEY = `${STORAGE_KEY}-session`;
+const API_STATE_URL = "/api/state";
+const API_LOGIN_URL = "/api/login";
+const REMOTE_SAVE_DELAY = 650;
+
+let remoteSaveTimer = null;
+let remoteSaveInProgress = false;
+let lastRemoteSaveHash = "";
 
 const statusOrder = ["pendiente", "progreso", "revision", "bloqueada", "completada"];
 const statusLabels = {
@@ -55,6 +63,7 @@ document.addEventListener("DOMContentLoaded", () => {
   injectIcons();
   bindShellEvents();
   render();
+  initializeRemoteState();
 });
 
 function seedState() {
@@ -427,8 +436,218 @@ function normalizeMeetingNote(note) {
   };
 }
 
-function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+function saveState(options = {}) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch (error) {
+    console.warn("No se pudo guardar la copia local", error);
+  }
+
+  if (!options.skipRemote) {
+    scheduleRemoteSave();
+  }
+}
+
+async function initializeRemoteState() {
+  if (!hasRemoteSession()) {
+    openLoginModal("Ingresa la contrasena del dashboard para cargar la base de datos.");
+    return;
+  }
+
+  await pullRemoteState();
+}
+
+function remoteStatePayload() {
+  return {
+    people: state.people,
+    clients: state.clients,
+    activities: state.activities,
+    meetingNotes: state.meetingNotes
+  };
+}
+
+function getRemoteSession() {
+  try {
+    const raw = localStorage.getItem(AUTH_STORAGE_KEY);
+    if (!raw) return null;
+    const session = JSON.parse(raw);
+    if (!session.token || !session.expiresAt) return null;
+    if (Date.now() > session.expiresAt) {
+      clearRemoteSession();
+      return null;
+    }
+    return session;
+  } catch (error) {
+    clearRemoteSession();
+    return null;
+  }
+}
+
+function hasRemoteSession() {
+  return Boolean(getRemoteSession());
+}
+
+function clearRemoteSession() {
+  localStorage.removeItem(AUTH_STORAGE_KEY);
+}
+
+function setRemoteSession(token, expiresInSeconds) {
+  localStorage.setItem(
+    AUTH_STORAGE_KEY,
+    JSON.stringify({
+      token,
+      expiresAt: Date.now() + Number(expiresInSeconds || 43200) * 1000
+    })
+  );
+}
+
+function authHeaders(extraHeaders = {}) {
+  const session = getRemoteSession();
+  return {
+    ...extraHeaders,
+    ...(session ? { Authorization: `Bearer ${session.token}` } : {})
+  };
+}
+
+async function apiFetch(url, options = {}) {
+  const headers = authHeaders(options.headers || {});
+  const response = await fetch(url, { ...options, headers });
+
+  if (response.status === 401) {
+    clearRemoteSession();
+    openLoginModal("Sesion vencida. Ingresa nuevamente la contrasena.");
+    throw new Error("Sesion vencida");
+  }
+
+  return response;
+}
+
+async function pullRemoteState() {
+  try {
+    showToast("Cargando datos del servidor...");
+    const response = await apiFetch(API_STATE_URL, { method: "GET" });
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.error || "No se pudieron cargar los datos.");
+    }
+
+    if (payload.state) {
+      const currentUi = state.ui || seedState().ui;
+      state = migrateState({ ...payload.state, ui: currentUi });
+      saveState({ skipRemote: true });
+      lastRemoteSaveHash = JSON.stringify(remoteStatePayload());
+      render();
+      showToast("Datos cargados de la base de datos.");
+      return;
+    }
+
+    await syncStateToServer({ force: true });
+    showToast("Base de datos inicializada.");
+  } catch (error) {
+    console.warn("No se pudo cargar desde el servidor", error);
+    showToast("Trabajando con copia local. Revisa la conexion/API.");
+  }
+}
+
+function scheduleRemoteSave() {
+  if (!hasRemoteSession()) return;
+  window.clearTimeout(remoteSaveTimer);
+  remoteSaveTimer = window.setTimeout(() => {
+    syncStateToServer().catch(error => {
+      console.warn("No se pudo sincronizar", error);
+      showToast("Guardado local. Falta sincronizar con servidor.");
+    });
+  }, REMOTE_SAVE_DELAY);
+}
+
+async function syncStateToServer(options = {}) {
+  if (!hasRemoteSession()) {
+    openLoginModal("Ingresa la contrasena para guardar en la base de datos.");
+    return;
+  }
+
+  const payload = remoteStatePayload();
+  const hash = JSON.stringify(payload);
+  if (!options.force && hash === lastRemoteSaveHash) return;
+  if (remoteSaveInProgress) {
+    scheduleRemoteSave();
+    return;
+  }
+
+  remoteSaveInProgress = true;
+  try {
+    const response = await apiFetch(API_STATE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state: payload })
+    });
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.error || "No se pudo guardar en la base de datos.");
+    }
+
+    lastRemoteSaveHash = hash;
+    if (options.force) showToast("Datos sincronizados.");
+  } finally {
+    remoteSaveInProgress = false;
+  }
+}
+
+function openLoginModal(message = "Ingresa la contrasena del dashboard.") {
+  openModal(`
+    <form id="loginForm">
+      <div class="modal-header">
+        <div>
+          <h3>Conectar base de datos</h3>
+          <p class="muted" style="margin:5px 0 0;">${escapeHtml(message)}</p>
+        </div>
+      </div>
+      <div class="modal-body">
+        <label class="field full">
+          <span>Contrasena</span>
+          <input name="password" type="password" required autocomplete="current-password" placeholder="Contrasena configurada en Vercel">
+        </label>
+        <p class="muted">La clave real queda guardada en las variables de entorno de Vercel, no en este archivo.</p>
+      </div>
+      <div class="modal-footer">
+        <button class="primary-button" type="submit">Entrar y sincronizar</button>
+      </div>
+    </form>
+  `);
+}
+
+async function loginDashboard(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  const button = form.querySelector("button[type='submit']");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Conectando...";
+  }
+
+  try {
+    const response = await fetch(API_LOGIN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: data.password })
+    });
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.error || "Contrasena incorrecta.");
+    }
+
+    setRemoteSession(payload.token, payload.expiresIn);
+    closeModal();
+    await pullRemoteState();
+  } catch (error) {
+    showToast(error.message || "No se pudo iniciar sesion.");
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Entrar y sincronizar";
+    }
+  }
 }
 
 function bindShellEvents() {
@@ -885,20 +1104,30 @@ function renderTeam(view) {
 }
 
 function renderData(view) {
+  const remoteLabel = hasRemoteSession() ? "Sesion activa" : "Sin sesion";
   view.innerHTML = `
     <div class="view-header">
       <div>
         <h3>Datos y respaldo</h3>
-        <p>Esta versión guarda la información en el navegador. Puedes exportar JSON, importar una copia o reiniciar datos de ejemplo.</p>
+        <p>La informacion se guarda en la base de datos por medio de la API de Vercel. El navegador conserva una copia local como respaldo.</p>
       </div>
     </div>
 
     <section class="data-panel">
       <div class="section-title">
-        <h4>Portabilidad</h4>
-        <span>LocalStorage</span>
+        <h4>Sincronizacion</h4>
+        <span>Base de datos + LocalStorage</span>
+      </div>
+      <div class="list-stack" style="margin-bottom:14px;">
+        <div class="insight-item good">
+          <strong>Estado remoto</strong>
+          <span>${remoteLabel}. Los clientes, actividades y notas se guardan en Supabase desde /api/state.</span>
+        </div>
       </div>
       <div class="quick-actions">
+        <button type="button" data-action="sync-now"><span data-icon="database"></span> Sincronizar ahora</button>
+        <button type="button" data-action="remote-login"><span data-icon="check"></span> Conectar</button>
+        <button type="button" data-action="remote-logout"><span data-icon="close"></span> Cerrar sesion</button>
         <button type="button" data-action="export-json"><span data-icon="download"></span> Exportar JSON</button>
         <button type="button" data-action="trigger-import"><span data-icon="upload"></span> Importar JSON</button>
         <button type="button" data-action="copy-json"><span data-icon="database"></span> Copiar JSON</button>
@@ -909,21 +1138,21 @@ function renderData(view) {
 
     <section class="data-panel">
       <div class="section-title">
-        <h4>Siguiente paso técnico</h4>
-        <span>Cuando conectemos usuarios reales</span>
+        <h4>Arquitectura aplicada</h4>
+        <span>Version funcional</span>
       </div>
       <div class="list-stack">
         <div class="insight-item good">
-          <strong>Base de datos</strong>
-          <span>Clientes, equipo, actividades, comentarios, auditoría de cambios y permisos por rol.</span>
+          <strong>API /api/state</strong>
+          <span>Lee y guarda el estado real de la app en una tabla JSONB de Supabase.</span>
         </div>
         <div class="insight-item warn">
-          <strong>Portal de contador y auxiliar</strong>
-          <span>Ingreso con correo, vista limitada a sus clientes y opción de actualizar avances sin tocar información sensible.</span>
+          <strong>Acceso con contrasena</strong>
+          <span>La app pide una contrasena y recibe un token temporal. La clave privada de Supabase queda solo en Vercel.</span>
         </div>
         <div class="insight-item">
-          <strong>Reportes para dirección</strong>
-          <span>Resumen semanal por gerente, cumplimiento por responsable, bloqueos y actividades vencidas.</span>
+          <strong>Siguiente mejora</strong>
+          <span>Separar clientes, actividades, comentarios y usuarios en tablas independientes con permisos por rol.</span>
         </div>
       </div>
     </section>
@@ -1565,6 +1794,12 @@ function handleActionClick(event) {
   if (type === "copy-meeting-summary") copyMeetingSummary(action.dataset.personId);
   if (type === "export-json") exportJson();
   if (type === "copy-json") copyText(JSON.stringify(state, null, 2), "JSON copiado.");
+  if (type === "sync-now") syncStateToServer({ force: true }).catch(error => showToast(error.message));
+  if (type === "remote-login") openLoginModal();
+  if (type === "remote-logout") {
+    clearRemoteSession();
+    openLoginModal("Sesion cerrada. Ingresa la contrasena para volver a sincronizar.");
+  }
   if (type === "trigger-import") $("#importFile")?.click();
   if (type === "reset-data") resetData();
   if (type === "export-csv") exportActivitiesCsv();
@@ -1576,6 +1811,12 @@ function handleInlineChange(event) {
 }
 
 function handleFormSubmit(event) {
+  if (event.target.id === "loginForm") {
+    event.preventDefault();
+    loginDashboard(event.target);
+    return;
+  }
+
   if (event.target.id === "activityForm") {
     event.preventDefault();
     saveActivityForm(event.target);

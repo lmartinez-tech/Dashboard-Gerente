@@ -1,0 +1,9 @@
+{
+  "name": "dashboard-gerente-funcional",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dashboard gerente contador con API de Vercel y persistencia en Supabase.",
+  "scripts": {
+    "check": "node --check api/_auth.js && node --check api/login.js && node --check api/state.js && node --check app.js"
+  }
+}
