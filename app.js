@@ -347,25 +347,83 @@ function seedState() {
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return seedState();
+    if (!raw) return migrateState(seedState());
     const parsed = JSON.parse(raw);
     return migrateState(parsed);
   } catch (error) {
     console.warn("No se pudo cargar el estado guardado", error);
-    return seedState();
+    return migrateState(seedState());
   }
 }
 
 function migrateState(data) {
   const seeded = seedState();
+  const incomingUi = data.ui || {};
+
   return {
     ...seeded,
     ...data,
-    ui: { ...seeded.ui, ...(data.ui || {}) },
-    people: Array.isArray(data.people) ? data.people : seeded.people,
-    clients: Array.isArray(data.clients) ? data.clients : seeded.clients,
-    activities: Array.isArray(data.activities) ? data.activities : seeded.activities,
-    meetingNotes: Array.isArray(data.meetingNotes) ? data.meetingNotes : seeded.meetingNotes
+    ui: {
+      ...seeded.ui,
+      ...incomingUi,
+      currentPersonId: mapPersonId(incomingUi.currentPersonId || seeded.ui.currentPersonId),
+      meetingPersonId: mapPersonId(incomingUi.meetingPersonId || seeded.ui.meetingPersonId)
+    },
+
+    // El equipo se maneja desde app.js. Esto evita que localStorage conserve personas viejas.
+    people: seeded.people,
+
+    // Normaliza clientes viejos que tengan "régimen" o IDs antiguos.
+    clients: Array.isArray(data.clients)
+      ? data.clients.map(normalizeClient)
+      : seeded.clients.map(normalizeClient),
+
+    // Normaliza actividades viejas con responsables antiguos.
+    activities: Array.isArray(data.activities)
+      ? data.activities.map(normalizeActivity)
+      : seeded.activities.map(normalizeActivity),
+
+    meetingNotes: Array.isArray(data.meetingNotes)
+      ? data.meetingNotes.map(normalizeMeetingNote)
+      : seeded.meetingNotes.map(normalizeMeetingNote)
+  };
+}
+
+function mapPersonId(id) {
+  const replacements = {
+    "cont-daniel": "cont-Jannet",
+    "cont-camila": "cont-carolina",
+    "cont-jorge": "cont-Jannet",
+    "aux-laura": "aux-cristian",
+    "aux-natalia": "aux-cristian",
+    "aux-santiago": "aux-cristian"
+  };
+
+  return replacements[id] || id;
+}
+
+function normalizeClient(client) {
+  return {
+    ...client,
+    plan: client.plan || client.regimen || client["régimen"] || "Régimen ordinario",
+    managerId: mapPersonId(client.managerId),
+    accountantId: mapPersonId(client.accountantId),
+    assistantId: mapPersonId(client.assistantId)
+  };
+}
+
+function normalizeActivity(activity) {
+  return {
+    ...activity,
+    assigneeId: mapPersonId(activity.assigneeId),
+    reviewerId: mapPersonId(activity.reviewerId)
+  };
+}
+
+function normalizeMeetingNote(note) {
+  return {
+    ...note,
+    personId: mapPersonId(note.personId)
   };
 }
 
@@ -1188,7 +1246,9 @@ function openActivityForm(activityId, defaults = {}) {
 }
 
 function openClientForm(clientId) {
-  const client = clientId ? state.clients.find(item => item.id === clientId) : null;
+  const existingClient = clientId ? state.clients.find(item => item.id === clientId) : null;
+  const client = existingClient ? normalizeClient(existingClient) : null;
+
   const model = client || {
     id: "",
     name: "",
@@ -1198,66 +1258,113 @@ function openClientForm(clientId) {
     status: "active",
     health: "green",
     managerId: currentPerson().role === "gerente" ? currentPerson().id : "gerente-liz",
-    accountantId: state.people.find(person => person.role === "contador")?.id,
-    assistantId: state.people.find(person => person.role === "auxiliar")?.id,
+    accountantId: state.people.find(person => person.role === "contador")?.id || "",
+    assistantId: state.people.find(person => person.role === "auxiliar")?.id || "",
     cadence: "Quincenal",
     lastReview: relativeDate(0),
     notes: ""
   };
+
+  const regimenOptions = [
+    "Régimen ordinario",
+    "Régimen simple",
+    "Responsable de IVA",
+    "No responsable de IVA",
+    "Gran contribuyente",
+    "Otro"
+  ];
+
+  const selectedPlan = regimenOptions.includes(model.plan) ? model.plan : "Régimen ordinario";
+
   openModal(`
     <form id="clientForm">
       <div class="modal-header">
         <h3>${client ? "Editar cliente" : "Nuevo cliente"}</h3>
-        <button class="icon-button" type="button" data-action="close-modal" aria-label="Cerrar"><span data-icon="close"></span></button>
+        <button class="icon-button" type="button" data-action="close-modal" aria-label="Cerrar">
+          <span data-icon="close"></span>
+        </button>
       </div>
+
       <div class="modal-body">
         <input type="hidden" name="id" value="${escapeHtml(model.id)}">
+
         <div class="form-grid">
           <label class="field">
             <span>Cliente</span>
             <input name="name" required type="text" value="${escapeAttribute(model.name)}">
           </label>
+
           <label class="field">
             <span>NIT</span>
             <input name="nit" type="text" value="${escapeAttribute(model.nit)}">
           </label>
+
           <label class="field">
             <span>Sector</span>
             <input name="sector" type="text" value="${escapeAttribute(model.sector)}">
           </label>
+
           <label class="field">
-  <span>Régimen</span>
-  <select name="plan">
-    <option value="Régimen ordinario" ${model.plan === "Régimen ordinario" ? "selected" : ""}>Régimen ordinario</option>
-    <option value="Régimen simple" ${model.plan === "Régimen simple" ? "selected" : ""}>Régimen simple</option>
-    <option value="Gran contribuyente" ${model.plan === "Gran contribuyente" ? "selected" : ""}>Gran contribuyente</option>
-    <option value="Otro" ${model.plan === "Otro" ? "selected" : ""}>Otro</option>
-  </select>
-</label>
+            <span>Régimen</span>
+            <select name="plan">
+              ${regimenOptions.map(option => `
+                <option value="${escapeAttribute(option)}" ${selectedPlan === option ? "selected" : ""}>
+                  ${escapeHtml(option)}
+                </option>
+              `).join("")}
+            </select>
+          </label>
+
           <label class="field">
             <span>Gerente</span>
             <select name="managerId">
-              ${state.people.filter(person => person.role === "gerente").map(person => `<option value="${person.id}" ${model.managerId === person.id ? "selected" : ""}>${escapeHtml(person.name)}</option>`).join("")}
+              ${state.people
+                .filter(person => person.role === "gerente")
+                .map(person => `
+                  <option value="${person.id}" ${model.managerId === person.id ? "selected" : ""}>
+                    ${escapeHtml(person.name)}
+                  </option>
+                `).join("")}
             </select>
           </label>
+
           <label class="field">
             <span>Contador</span>
             <select name="accountantId">
-              ${state.people.filter(person => person.role === "contador").map(person => `<option value="${person.id}" ${model.accountantId === person.id ? "selected" : ""}>${escapeHtml(person.name)}</option>`).join("")}
+              ${state.people
+                .filter(person => person.role === "contador")
+                .map(person => `
+                  <option value="${person.id}" ${model.accountantId === person.id ? "selected" : ""}>
+                    ${escapeHtml(person.name)}
+                  </option>
+                `).join("")}
             </select>
           </label>
+
           <label class="field">
             <span>Auxiliar</span>
             <select name="assistantId">
-              ${state.people.filter(person => person.role === "auxiliar").map(person => `<option value="${person.id}" ${model.assistantId === person.id ? "selected" : ""}>${escapeHtml(person.name)}</option>`).join("")}
+              ${state.people
+                .filter(person => person.role === "auxiliar")
+                .map(person => `
+                  <option value="${person.id}" ${model.assistantId === person.id ? "selected" : ""}>
+                    ${escapeHtml(person.name)}
+                  </option>
+                `).join("")}
             </select>
           </label>
+
           <label class="field">
             <span>Salud</span>
             <select name="health">
-              ${Object.keys(healthLabels).map(health => `<option value="${health}" ${model.health === health ? "selected" : ""}>${healthLabels[health]}</option>`).join("")}
+              ${Object.keys(healthLabels).map(health => `
+                <option value="${health}" ${model.health === health ? "selected" : ""}>
+                  ${healthLabels[health]}
+                </option>
+              `).join("")}
             </select>
           </label>
+
           <label class="field">
             <span>Estado</span>
             <select name="status">
@@ -1266,16 +1373,19 @@ function openClientForm(clientId) {
               <option value="inactive" ${model.status === "inactive" ? "selected" : ""}>Inactivo</option>
             </select>
           </label>
+
           <label class="field">
             <span>Ritmo</span>
             <input name="cadence" type="text" value="${escapeAttribute(model.cadence)}">
           </label>
+
           <label class="field full">
             <span>Notas</span>
             <textarea name="notes">${escapeHtml(model.notes || "")}</textarea>
           </label>
         </div>
       </div>
+
       <div class="modal-footer">
         <button class="secondary-button" type="button" data-action="close-modal">Cancelar</button>
         <button class="primary-button" type="submit">Guardar</button>
@@ -1343,36 +1453,73 @@ function openActivityDetail(activityId) {
 function openClientDetail(clientId) {
   const client = state.clients.find(item => item.id === clientId);
   if (!client) return;
-  const activities = state.activities.filter(activity => activity.clientId === client.id);
+
+  const normalizedClient = normalizeClient(client);
+  const activities = state.activities.filter(activity => activity.clientId === normalizedClient.id);
+  const clientPlan = normalizedClient.plan || "Régimen ordinario";
+
   openModal(`
     <div class="modal-header">
       <div>
-        <h3>${escapeHtml(client.name)}</h3>
-        <p class="muted" style="margin:5px 0 0;">${escapeHtml(client.nit)} · ${escapeHtml(client.plan)}</p>
+        <h3>${escapeHtml(normalizedClient.name)}</h3>
+        <p class="muted" style="margin:5px 0 0;">
+          ${escapeHtml(normalizedClient.nit)} · Régimen: ${escapeHtml(clientPlan)}
+        </p>
       </div>
-      <button class="icon-button" type="button" data-action="close-modal" aria-label="Cerrar"><span data-icon="close"></span></button>
+      <button class="icon-button" type="button" data-action="close-modal" aria-label="Cerrar">
+        <span data-icon="close"></span>
+      </button>
     </div>
+
     <div class="modal-body">
       <div class="three-grid">
-        ${compactMetric("Salud", healthLabels[client.health], client.health === "red" ? "bad" : client.health === "yellow" ? "warn" : "good")}
+        ${compactMetric("Salud", healthLabels[normalizedClient.health], normalizedClient.health === "red" ? "bad" : normalizedClient.health === "yellow" ? "warn" : "good")}
         ${compactMetric("Abiertas", activities.filter(activity => !isDone(activity)).length, "info")}
         ${compactMetric("Vencidas", activities.filter(isOverdue).length, activities.filter(isOverdue).length ? "bad" : "good")}
       </div>
+
       <div class="split-grid">
         <div class="list-stack">
-          <div class="insight-item"><strong>Gerente</strong><span>${escapeHtml(personById(client.managerId)?.name || "")}</span></div>
-          <div class="insight-item"><strong>Contador</strong><span>${escapeHtml(personById(client.accountantId)?.name || "")}</span></div>
-          <div class="insight-item"><strong>Auxiliar</strong><span>${escapeHtml(personById(client.assistantId)?.name || "")}</span></div>
-          <div class="insight-item"><strong>Notas</strong><span>${escapeHtml(client.notes || "Sin notas")}</span></div>
+          <div class="insight-item">
+            <strong>Gerente</strong>
+            <span>${escapeHtml(personById(normalizedClient.managerId)?.name || "")}</span>
+          </div>
+
+          <div class="insight-item">
+            <strong>Contador</strong>
+            <span>${escapeHtml(personById(normalizedClient.accountantId)?.name || "")}</span>
+          </div>
+
+          <div class="insight-item">
+            <strong>Auxiliar</strong>
+            <span>${escapeHtml(personById(normalizedClient.assistantId)?.name || "")}</span>
+          </div>
+
+          <div class="insight-item">
+            <strong>Notas</strong>
+            <span>${escapeHtml(normalizedClient.notes || "Sin notas")}</span>
+          </div>
         </div>
+
         <div class="list-stack">
-          ${activities.slice(0, 8).map(activity => insightItem(activity, isOverdue(activity) ? "bad" : "")).join("") || emptySmall("Sin actividades para este cliente.")}
+          ${activities
+            .slice(0, 8)
+            .map(activity => insightItem(activity, isOverdue(activity) ? "bad" : ""))
+            .join("") || emptySmall("Sin actividades para este cliente.")}
         </div>
       </div>
     </div>
+
     <div class="modal-footer">
-      <button class="secondary-button" type="button" data-action="edit-client" data-id="${client.id}"><span data-icon="edit"></span> Editar</button>
-      <button class="primary-button" type="button" data-action="new-activity-for-client" data-id="${client.id}"><span data-icon="plus"></span> Asignar actividad</button>
+      <button class="secondary-button" type="button" data-action="edit-client" data-id="${normalizedClient.id}">
+        <span data-icon="edit"></span>
+        Editar
+      </button>
+
+      <button class="primary-button" type="button" data-action="new-activity-for-client" data-id="${normalizedClient.id}">
+        <span data-icon="plus"></span>
+        Asignar actividad
+      </button>
     </div>
   `);
 }
@@ -1477,27 +1624,31 @@ function saveActivityForm(form) {
 
 function saveClientForm(form) {
   const data = Object.fromEntries(new FormData(form).entries());
+
   const model = {
     id: data.id || `cli-${Date.now()}`,
-    name: data.name.trim(),
-    nit: data.nit.trim(),
-    sector: data.sector.trim(),
-    plan: data.plan.trim(),
-    status: data.status,
-    health: data.health,
-    managerId: data.managerId,
-    accountantId: data.accountantId,
-    assistantId: data.assistantId,
-    cadence: data.cadence.trim(),
+    name: (data.name || "").trim(),
+    nit: (data.nit || "").trim(),
+    sector: (data.sector || "").trim(),
+    plan: (data.plan || data.regimen || data["régimen"] || "Régimen ordinario").trim(),
+    status: data.status || "active",
+    health: data.health || "green",
+    managerId: data.managerId || currentPerson().id,
+    accountantId: data.accountantId || "",
+    assistantId: data.assistantId || "",
+    cadence: (data.cadence || "").trim(),
     lastReview: relativeDate(0),
-    notes: data.notes.trim()
+    notes: (data.notes || "").trim()
   };
+
   const existing = state.clients.find(client => client.id === data.id);
+
   if (existing) {
     Object.assign(existing, model);
   } else {
     state.clients.unshift(model);
   }
+
   saveState();
   closeModal();
   renderView();
@@ -1871,7 +2022,8 @@ function importJson(event) {
 
 function resetData() {
   if (!confirm("¿Reiniciar los datos de ejemplo? Se perderán los cambios guardados en este navegador.")) return;
-  state = seedState();
+
+  state = migrateState(seedState());
   saveState();
   render();
   showToast("Datos reiniciados.");
